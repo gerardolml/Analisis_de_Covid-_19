@@ -1,0 +1,74 @@
+---
+title: "Proyecto de Curso Covid"
+author: "Gerardo Ayala"
+date: "4/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(reticulate)
+use_python("C:/ProgramData/Anaconda3/python.exe")
+library(knitr)
+library(tidyverse) #%>%
+library(magrittr)  #%<>%
+library(lubridate)
+```
+
+# Carga y limpieza de datos 
+
+Los datos que se analizan en este curso vienen de [Kaggle](https://www.kaggle.com/imdevskp/corona-virus-report/data#)  El cual estamos empezandolo en 4/06/20 junto con el curso que estamos viendo el curso.
+
+```{r}
+pd<-import("pandas")
+datos<-pd$read_csv("covid_19_clean_complete.csv")
+datos %>% head(10)%>% kable()
+```
+
+#Estructura de datos 
+
+```{r}
+colnames(datos)=c("Provincia_Estado"
+                  ,"Pais_Region",
+                  "Latitud", #N+ o S-
+                  "Longitud",#E+ o W-
+                  "Fecha",
+                  "Caso_Confirmado",
+                  "Caso_Muertes",
+                 "Caso_Recuperados",
+                 "RigionOMS")
+datos%>%head()%>%kable()
+datos$Provincia_Estado=unlist(datos$Provincia_Estado)
+datos$RigionOMS=unlist(datos$RigionOMS)
+```
+
+* Cualidades cualitativas con `factor`o `as.factor`
+* Ordinales se convierten con  `ordered`-
+* Cuantitativos se convierten en `as.numeric`
+
+```{r}
+datos$Provincia_Estado%<>% as.factor()
+datos$RigionOMS %<>% as.factor()
+datos$Pais_Region%<>%as.factor()
+datos$Fecha%<>%as.Date(format="%m/%d/%y")
+str(datos)
+datos%>%head()
+```
+
+$$Confirmados = Muertos+ Recuperados + Efermos$$
+
+```{r}
+datos%<>%
+  mutate(Casos_Enfermos= Caso_Confirmado-Caso_Muertes-Caso_Recuperados)
+datos%>%filter(Caso_Confirmado>100000)%>%head(10)%>%kable()
+datos%>%
+        filter(Casos_Enfermos<0)%>%
+        arrange(Provincia_Estado,Fecha)%>%
+        kable()
+datos%>%
+        filter(Provincia_Estado=="Hainan")%>%
+        kable()
+
+```
+
+

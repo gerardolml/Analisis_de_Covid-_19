@@ -1,0 +1,426 @@
+---
+title: "Proyecto de Curso Covid"
+author: "Gerardo Ayala"
+date: "4/6/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(reticulate)
+use_python("C:/ProgramData/Anaconda3/python.exe")
+library(knitr)
+library(tidyverse) #%>%
+library(magrittr)  #%<>%
+library(lubridate)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(rnaturalearthhires)
+library(plotly)
+library(xts)
+library(dygraphs)
+library(car)
+library(wbstats)
+```
+
+# Carga y limpieza de datos 
+
+Los datos que se analizan en este curso vienen de [Kaggle](https://www.kaggle.com/imdevskp/corona-virus-report/data#)  El cual estamos empezandolo en 4/06/20 junto con el curso que estamos viendo el curso.
+
+```{r}
+pd<-import("pandas")
+datos<-pd$read_csv("covid_19_clean_complete.csv")
+datos %>% head(10)%>% kable()
+```
+
+#Estructura de datos 
+
+```{r}
+colnames(datos)=c("Provincia_Estado"
+                  ,"Pais_Region",
+                  "Latitud", #N+ o S-
+                  "Longitud",#E+ o W-
+                  "Fecha",
+                  "Caso_Confirmado",
+                  "Caso_Muertes",
+                 "Caso_Recuperados",
+                 "Caso_Activo",
+                 "RigionOMS")
+datos%>%head()%>%kable()
+datos$Provincia_Estado=unlist(datos$Provincia_Estado)
+datos$RigionOMS=unlist(datos$RigionOMS)
+```
+
+* Cualidades cualitativas con `factor`o `as.factor`
+* Ordinales se convierten con  `ordered`-
+* Cuantitativos se convierten en `as.numeric`
+
+```{r}
+datos$Provincia_Estado%<>% as.factor()
+datos$RigionOMS %<>% as.factor()
+datos$Pais_Region%<>%as.factor()
+datos$Fecha%<>%as.Date()
+str(datos)
+datos%>%head()
+```
+
+$$Confirmados = Muertos+ Recuperados + Efermos$$
+
+```{r}
+datos%<>%mutate(Casos_Enfermos=
+           Caso_Confirmado-Caso_Muertes-Caso_Recuperados)
+datos%>%filter(Caso_Confirmado>100000)%>%head(10)%>%kable()
+
+datos%>%
+        filter(Casos_Enfermos<0)%>%
+        arrange(Provincia_Estado,Fecha)%>%
+        head() %>% 
+        kable()
+datos%>%
+        filter(Provincia_Estado=="Hainan")%>%
+        head() %>% 
+        kable()
+
+datos%>% 
+      filter(Provincia_Estado=="Hainan",Casos_Enfermos<0)%>% mutate(Caso_Recuperados=Caso_Recuperados+Caso_Muertes,Casos_Enfermos=0) %>% 
+        head() %>% 
+        kable()
+
+```
+
+
+#Analisis Geografico 
+
+```{r}
+datoseuropa=datos%>%
+      filter(Latitud>38,between(Longitud,-25,30))
+table(datoseuropa$Pais_Region)%>%
+    as.data.frame()%>%
+    filter(Freq>0)%>%
+    head(10)%>%
+    kable()
+
+datoseuropa%>%
+  filter(Fecha==ymd("2020-06-16"))%>%
+        head() %>% 
+   kable()
+```
+
+$$d(x,y) = \sqrt{(x_1-y_1)^2-(x_2-y_2)^2}$$
+```{r}
+mundo<-ne_countries(scale = "large",returnclass = "sf")
+datos$Pais_Region=factor(datos$Pais_Region,levels = c(levels(datos$Pais_Region),"United States of America"))
+datos[datos$Pais_Region=="US",]$Pais_Region="United States of America"
+mundo%>% 
+       inner_join(datos,by =c("name"="Pais_Region"))%>%
+     filter(Fecha==dmy("03-06-2020"))%>%
+        ggplot()+
+        geom_sf(color="black",
+        aes(fill=Caso_Confirmado))+
+        #coord_sf(crs = "+proj=laea + lat_0=50 + lon_0=10")+
+        scale_fill_viridis_c(option = "plasma",trans="sqrt")+
+        xlab("Longitud")+
+        ylab("Latitud")+
+        ggtitle("Mapa del mundo")->g
+ggplotly(g)
+```
+ 
+```{r}
+datos%>%
+        filter(Fecha==dmy("03-06-2020"))%>%
+        ggplot(aes(Longitud,Latitud))+
+        geom_point(aes(size=log(Caso_Confirmado+1),
+                       colour=log(Caso_Muertes+1)))+
+        coord_fixed()+
+        theme(legend.position = "bottom")->g
+ggplotly(g)
+```
+
+```{r}
+thr=1000
+
+datos%>% 
+        filter(Fecha==ymd("2020-06-20"),
+               Caso_Confirmado>thr)%>%
+        mutate(Prop_Muertos=
+                       Caso_Muertes/Caso_Confirmado,
+               Raking=dense_rank(desc(Prop_Muertos))) %>%
+        arrange(Raking) %>% 
+        head() %>% 
+        kable()
+```
+
+```{r}
+datos$lat_clases=cut(datos$Latitud,
+                     breaks = seq(from=-90,to=90,by=10))
+datos$lon_clases=cut(datos$Longitud,breaks = seq(from=-90,to=90,by=10))
+tt=table(datos$lat_clases,datos$lon_clases)
+tt = tt[nrow(tt):1,]
+mosaicplot(t(tt),shade = T)
+```
+
+## Analisis de datos temporales 
+
+```{r}
+datos_por_fecha=aggregate(data = datos,
+        cbind(Caso_Confirmado,Caso_Muertes,Caso_Recuperados)~Fecha,
+FUN = sum)
+datos_por_fecha$Casos_Enfermos = datos_por_fecha$Caso_Confirmado- datos_por_fecha$Caso_Muertes - datos_por_fecha$Caso_Recuperados
+head(datos_por_fecha)
+tail(datos_por_fecha)
+
+barplot(Caso_Confirmado~Fecha,data = datos_por_fecha)
+
+plot(Caso_Confirmado~Fecha,data = datos_por_fecha,col ="blue",type="l",log ="y")
+lines(Caso_Muertes~Fecha,data = datos_por_fecha,col ="red")
+lines(Caso_Recuperados~Fecha,data = datos_por_fecha,col ="green")
+legend("topleft",c("Confirmados","Muertos","Recuperados"),
+                 col = c("blue","red","green"),pch = 1,
+                 lwd = 2)
+datos_por_fecha_ts<-xts(x=datos_por_fecha[,2:5],
+                        order.by=datos_por_fecha$Fecha)
+dygraph(datos_por_fecha_ts) %>% 
+        dyOptions(labelsKMB  = T,fillGraph = T,
+                  fillAlpha = 0.05,
+                  drawGrid = T) %>% 
+        dyRangeSelector() %>% 
+        dyCrosshair(direction = "vertical") #%>% 
+        #dyHighlight(highlightCircleSize = 5,highlightSeriesBackgroundAlpha = 0.2,
+                # hideOnMouseOut = T) %>% 
+        #dyRoller(rollPeriod = 2)
+```
+
+```{r}
+datos_mexico =datos %>% 
+        filter(Pais_Region=="Mexico") %>% 
+        select(Fecha,starts_with("Cas"))
+plot(x=datos_mexico$Fecha,y=datos_mexico$Caso_Confirmado,
+     main = "Caso confirmado en Mexico",type = "s",
+     col="blue",lwd=2)
+datos_por_fecha_ts<-xts(x=datos_mexico[,2:5],
+                        order.by=datos_mexico$Fecha)
+dygraph(datos_por_fecha_ts) %>% 
+        dyOptions(labelsKMB  = T,fillGraph = T,
+                  fillAlpha = 0.05,
+                  drawGrid = T) %>% 
+        dyRangeSelector() %>% 
+        dyCrosshair(direction = "vertical") %>% 
+        dyHighlight(highlightCircleSize = 5,highlightSeriesBackgroundAlpha = 0.2,
+                    hideOnMouseOut = F) %>% 
+        dyRoller(rollPeriod = 2)
+barplot(as.matrix(t(datos_mexico[,3:5])),
+names = datos_mexico$Fecha ,      
+col = c("red","green","yellow"),main = "Estudio de casos 
+por tipo en México")
+legend("topleft",c("Muertos","Recuperados","Enfermos"),
+       col = c("red","green","yellow"),
+       lwd =2 ,pch=1)
+
+
+```
+
+
+
+```{r}
+datos_mexico%<>% 
+        mutate(Nuevos_Confirmados= Caso_Confirmado- 
+                       lag(Caso_Confirmado,n=1),
+               Nuevos_Muertos = Caso_Muertes - 
+                       lag(Caso_Muertes,n=1),
+               Nuevos_Recuperados = Caso_Recuperados -
+                       lag(Caso_Recuperados,n=1))
+plot(datos_mexico$Fecha,datos_mexico$Nuevos_Confirmados,
+     type = "l",col="blue",xlab = "Fecha",
+     ylab = "Nuevos casos",main = "Casos Nuevos en Mexico")
+lines(datos_mexico$Fecha,datos_mexico$Nuevos_Muertos,col ="red")
+legend("topleft",c("Casos Confirmados",
+                   "Muertos"),
+       col = c("blue","red"),
+       lwd = 2,pch = 1)
+```
+
+# Tarea 1 del curso 
+
+Teniendo en cuenta que la TVM del número de contagios para un día t se podría definir como: TVM(t) = (Casos en el día t - Casos en el día t-1)/Casos en el día t utiliza las funciones lead o lag para definir la TVM del número de nuevos casos de contagio en España (o en tu propio país)
+
+RESPUESTA 
+
+```{r}
+datos_mexico%<>%
+        mutate(TVM=(Caso_Confirmado - lag(Caso_Confirmado,n=1))/lag(Caso_Confirmado,n=1))
+plot(TVM~Fecha,data= datos_mexico,type = "l",col="blue",
+       xlab="Fecha", ylab="Tasa de variación media de casos", main= "Evolución de la tasa de variación media de casos en México")
+legend("topleft", "Confirmados", col= "blue", lwd = 2, pch=1 )
+```
+
+## Analisis por Cohortes
+
+```{r}
+primer_contagio = datos %>% 
+        group_by(Pais_Region) %>% 
+        filter(Caso_Confirmado>0) %>% 
+        summarise(Primer_Contagio = min(Fecha)-1)
+primer_contagio %>% head()
+
+data_first = datos %>% 
+        inner_join(primer_contagio,by = "Pais_Region") %>%        
+        mutate(Dias_Desde_PC = as.numeric(Fecha - Primer_Contagio)) %>%    
+        filter(Dias_Desde_PC>=0) %>% 
+        group_by(Dias_Desde_PC,Pais_Region) %>% 
+        summarise(Caso_Confirmado=sum(Caso_Confirmado),
+                  Caso_Muertes=sum(Caso_Muertes),
+                  Caso_Recuperados=sum(Caso_Recuperados),
+                  Casos_Enfermos = sum(Casos_Enfermos))
+
+data_first %>% 
+        filter(Pais_Region %in% c("Mexico","Spain",
+        "Italy","United States of America","Brazil",
+        "China")) %>% 
+        ggplot(aes(x=Dias_Desde_PC,y=Caso_Confirmado))+
+        geom_line(aes(col=Pais_Region))+
+        xlab("Dias desde el Primer Contagio")+
+        ylab("Numero de Contagiados")+
+        #theme(legend.position = "none")
+        ggtitle("Analisis por Cohortes")->ApC
+ggplotly(ApC)
+data_first %>% 
+        filter(Pais_Region %in% c("Mexico","Spain",
+        "Italy","United States of America","Brazil",
+        "China")) %>% 
+        ggplot(aes(x=Dias_Desde_PC,y=Caso_Muertes))+
+        geom_line(aes(col=Pais_Region))+
+        xlab("Dias desde el Primer Contagio")+
+        ylab("Numero de Muertes")+
+        #theme(legend.position = "none")
+        ggtitle("Analisis por Cohortes")->ApCM
+ggplotly(ApCM)
+data_first %>% 
+        filter(Pais_Region %in% c("Mexico","Spain",
+        "Italy","United States of America","Brazil",
+        "China")) %>% 
+        ggplot(aes(x=Dias_Desde_PC,y=Caso_Recuperados))+
+        geom_line(aes(col=Pais_Region))+
+        xlab("Dias desde el Primer Contagio")+
+        ylab("Numero de Recuperados")+
+        #theme(legend.position = "none")
+        ggtitle("Analisis por Cohortes")->ApCR
+ggplotly(ApCR)
+data_first %>% 
+        filter(Pais_Region %in% c("Mexico","Spain",
+        "Italy","United States of America","Brazil",
+        "China")) %>% 
+        ggplot(aes(x=Dias_Desde_PC,y=Casos_Enfermos))+
+        geom_line(aes(col=Pais_Region))+
+        xlab("Dias desde el Primer Contagio")+
+        ylab("Numero de Enfermos")+
+        #theme(legend.position = "none")
+        ggtitle("Analisis por Cohortes")->ApCE
+ggplotly(ApCE)
+```
+
+
+
+## Modelos de Regresion 
+
+* $x$:Variables Independietne: Numero de de dias desde el origen de la pandemia 
+*$y$: Variable Dependiente : Numero de casos confirmdaos 
+
+```{r}
+datos_mexico$Dias = as.numeric(datos_mexico$Fecha -
+                                dmy("22/01/2020")) 
+```
+
+
+### Regresion Lineal 
+
+$$ y=ax+b,a,b \in \mathbb{R}$$
+$$min_{a,b \in \mathbb{R}} \sum_{i=1}^n (y_i-(ax_i+b))^2$$
+
+
+```{r}
+modelo1<-lm(Caso_Confirmado~Dias,data = datos_mexico)
+summary(modelo1)
+```
+
+
+```{r}
+plot(datos_mexico$Dias,datos_mexico$Caso_Confirmado)
+abline(modelo1,col ="red")
+
+plot(modelo1$residuals~modelo1$fitted.values,xlab="Valores Agustado" , ylab ="Residuo del modelo")
+
+residuos = modelo1$residuals
+
+qqPlot(residuos,distribution = "norm",mean = mean(residuos),sd = sd(residuos))
+```
+
+Podemos decir que el modelo de __Regresion lineal simple__ queda descartado.
+
+### Regresion exponecial 
+
+$$log(y)=ax+b\ a,b \in \mathbb{R}$$ 
+$$y=e^{ax+b}=me^{ax}\ a,b \in \mathbb{R}$$
+
+```{r}
+modelo2<-lm(log(Caso_Confirmado)~Dias,
+            data = datos_mexico[datos_mexico$Caso_Confirmado>0,])
+summary(modelo2)
+```
+
+```{r}
+plot(datos_mexico$Dias,datos_mexico$Caso_Confirmado)
+lines(exp(modelo2$coefficients[1])*exp(modelo2$coefficients[2]*datos_mexico$Dias),col="blue")
+
+plot(modelo2$residuals~modelo2$fitted.values,xlab="Valores Ajustados",ylab = "Residuos del modelo")
+residuos=modelo2$residuals
+qqPlot(residuos,distribution = "norm",mean=mean(residuos), sd=sd(residuos))
+```
+
+### Modelo Potencial 
+
+$$log(y)=a\cdot log(x)+b$$
+$$y = e^{a \cdot log(x)+b}=mx^a$$
+
+```{r}
+modelo3<-lm(log(Caso_Confirmado)~log(Dias),
+  data = datos_mexico[datos_mexico$Caso_Confirmado >0,])
+summary(modelo3)
+```
+
+```{r}
+plot(datos_mexico$Dias,datos_mexico$Caso_Confirmado)
+lines(exp(modelo3$coefficients[1])*datos_mexico$Dias^modelo3$coefficients[2],col="green")
+
+plot(modelo3$residuals~modelo3$fitted.values,xlab="Valores Ajustados", ylab = "Residuos del modelo")
+
+residuos=modelo3$residuals
+qqPlot(residuos,distribution = "norm",mean=mean(residuos),sd=sd(residuos))
+```
+
+```{r}
+
+start_date=ymd('2020-01-22')
+end_date=ymd('2020-07-06')
+dates=seq(start_date+1,end_date,by="1 day")
+days_since_start=as.numeric(dates- start_date)
+new_data = data.frame(Dias = days_since_start)
+
+pred1 = predict(modelo1,newdata = new_data)
+pred2 = exp(predict(modelo2,newdata = new_data))
+pred3 = exp(predict(modelo3,newdata = new_data))
+
+datos_por_fecha_ts=xts(x=data.frame(Real=c(datos_mexico$Caso_Confirmado,rep(NA,length(pred1)-length(datos_mexico$Caso_Confirmado))),Mod_lin=pred1,Mod_exp=pred2,Mod_pot=pred3),order.by =dates)
+
+dygraph(datos_por_fecha_ts)
+```
+
+
+ 
+
+
+
+
+
+
+
+
